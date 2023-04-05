@@ -1,0 +1,201 @@
+import sqlite3
+from aiogram import Bot, Dispatcher, executor, types
+import logging
+
+TOKEN = '5544748157:AAGRQZdAd5uk7F-TaAJ1Yg1rkP-evqMksuQ'
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
+
+def logger(statement):  # функция отображения действий с базой данных
+    print(f'''
+---------------------
+EXECUTING
+{statement}
+---------------------
+''')
+
+
+class Database:
+    def __init__(self, path_to_db='example.db'):
+        self.path_to_db = path_to_db
+
+    @property  # чтобы вызывать функцию connection без круглых скобок
+    def connection(self):
+        return sqlite3.connect(self.path_to_db)
+
+    def execute(self, sql: str, parameters: tuple=None,
+                fetchone=False, fetchall=False, commit=False):
+        if not parameters:  # Если не передали значения для параметра parameters
+            parameters = tuple()  # делаем пустой кортеж для параметров
+        connection = self.connection
+        connection.set_trace_callback(logger)
+        cursor = connection.cursor()
+        data = None
+        cursor.execute(sql, parameters)
+        if commit:  # Сохранить изменения после запроса
+            connection.commit()
+        if fetchone:  # Получить одну запись
+            data = cursor.fetchone()
+        if fetchall:  # Получить все записи
+            data = cursor.fetchall()
+        connection.close()
+
+        return data
+
+    def create_table_users(self):
+        sql = """
+        CREATE TABLE USERS(
+        id int NOT NULL,
+        name varchar(255) NOT NULL,
+        email varchar(255),
+        PRIMARY KEY (id)
+        );
+        """
+        return self.execute(sql)
+
+    def add_user(self, id: int, name: str, email: str=None):
+        sql = "INSERT INTO Users(id, name, email) VALUES (?, ?, ?)"
+        parameters = (id, name, email)
+        self.execute(sql, parameters=parameters, commit=True)
+
+    @staticmethod  # Метод для использования внутри класса
+    def format_args(sql, parameters: dict):
+        sql += " AND ".join([
+            f'{item} = ?' for item in parameters
+        ])
+        return sql, tuple(parameters.values())
+
+    def select_all_users(self):  # Получить список всех пользователей
+        sql = "SELECT * FROM Users"
+        return self.execute(sql, fetchall=True)
+
+    def select_user(self, **kwargs):
+        sql = "SELECT * FROM Users WHERE "
+        sql, parameters = self.format_args(sql, kwargs)
+        return self.execute(sql, fetchone=True)
+
+    def count_users(self):  # Вывести кол-во записанных пользователей
+        return self.execute("SELECT COUNT(*) FROM Users;", fetchone=True)
+
+    def update_email(self, email, id):  # Задать эмэйл пользователю
+        sql = "UPDATE Users SET email=? WHERE if=?"
+        return self.execute(sql, parameters=(email, id), commit=True)
+
+    def delete_all_users(self):  # удалить всех пользователей из базы
+        self.execute("DELETE FROM Users WHERE TRUE")
+
+db_1 = Database()
+try:
+    db_1.create_table_users()
+    print('Table was created')
+except Exception as e:
+    print(e)
+
+
+@dp.message_handler(commands=['start'])
+async def bot_start(message: types.Message):
+    name = message.from_user.full_name
+    try:
+        db_1.add_user(id=message.from_user.id, name=name)
+    except sqlite3.IntegrityError as error:  # Ловим ошибку интеграции (добавления)
+        print(error)
+    count_users = db_1.count_users()[0]
+    print(db_1.count_users())
+    await message.answer(
+        '\n'.join([
+            f'Привет, {message.from_user.full_name}',
+            'Ты был занесён в базу данных',
+            f'В базе данных {count_users} пользователей'
+        ])
+    )
+
+
+# ----------------- errors handler -------------------
+@dp.message_handler(commands='try')
+async def bot_try(message: types.Message):
+    not_existing_user = 111111
+    # Не попадает в errors handler т.к. обрабатывается try..except
+    try:
+        await message.answer('Неправильно закрыт <b>тег</b>', parse_mode='HTML')
+    except Exception as err:
+        await message.answer(f'Не попало в errors handler. Ошибка {err}')
+
+    # Не попадает в errors handler т.к. обрабатывается try..except
+    try:
+        await bot.send_message(chat_id=not_existing_user, text='Несуществующий пользователь')
+    except Exception as err:
+        await message.answer(f'Не попало в errors handler. Ошибка {err}')
+
+    # Попадает в errors handler
+    await message.answer('Не существует <fff>тега</fff>', parse_mode='HTML')
+    logging.info('Это не выполнится, но бот не сломается')
+
+
+@dp.errors_handler()
+async def errors_handler(update, exception):
+    """
+    Exceptions handler. Catches all exceptions.
+    :param update:
+    :param exception:
+    :return: stdout logging
+    """
+
+    from  aiogram.utils.exceptions import (Unauthorized, InvalidQueryID,
+                                           TelegramAPIError, CantDemoteChatCreator,
+                                           MessageNotModified, MessageToDeleteNotFound,
+                                           MessageTextIsEmpty, RetryAfter,
+                                           CantParseEntities, MessageCantBeDeleted,
+                                           BadRequest)
+
+    from aiogram.types import Update
+
+    if isinstance(exception, CantParseEntities):
+        await Update.get_current().message.answer(f'Попало в errors handler. '
+                                                  f'CantParseEntities: {exception.args}')
+        return True
+
+    if isinstance(exception, Unauthorized):
+        logging.info(f'Unauthorized: {exception}')
+        return True
+
+    if isinstance(exception, InvalidQueryID):
+        logging.info(f'InvalidQueryID: {exception}')
+        return True
+
+    if isinstance(exception, TelegramAPIError):
+        logging.info(f'TelegramAPIError: {exception}')
+        return True
+
+    if isinstance(exception, CantDemoteChatCreator):
+        logging.info(f'CantDemoteChatCreator: {exception}')
+        return True
+
+    if isinstance(exception, MessageNotModified):
+        logging.info(f'MessageNotModified: {exception}')
+        return True
+
+    if isinstance(exception, MessageToDeleteNotFound):
+        logging.info(f'MessageToDeleteNotFound: {exception}')
+        return True
+
+    if isinstance(exception, MessageTextIsEmpty):
+        logging.info(f'MessageTextIsEmpty: {exception}')
+        return True
+
+    if isinstance(exception, RetryAfter):
+        logging.info(f'RetryAfter: {exception}')
+        return True
+
+    if isinstance(exception, MessageCantBeDeleted):
+        logging.info(f'MessageCantBeDeleted: {exception}')
+        return True
+
+    if isinstance(exception, BadRequest):
+        logging.info(f'BadRequest: {exception}')
+        return True
+
+
+if __name__ == '__main__':
+    executor.start_polling(dp)
